@@ -1,0 +1,24 @@
+
+- FinancingRound:
+  title: "seed"
+  fullyDiluted: 20
+  sharesIssued: 5
+  issuePrice: 1.23
+
+- FinancingRound:
+  title: "series A"
+  fullyDiluted: 200
+  sharesIssued: 100
+  issuePrice: 3.14
+
+- OwnedShares:
+  round: 0
+  amount: 1
+
+- OwnedShares:
+  round: 1
+  amount: 2
+
+- OwnedShares:
+  round: 1
+  amount: 2

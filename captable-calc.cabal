@@ -18,8 +18,8 @@ common warnings
 executable captable-calc
     import:           warnings
     main-is:          Main.hs
-    -- other-modules:
+    other-modules:    Config
     -- other-extensions:
-    build-depends:    base ^>=4.20.2.0, yaml
+    build-depends:    base ^>=4.20.2.0, yaml, text
     hs-source-dirs:   app
     default-language: GHC2024

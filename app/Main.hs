@@ -1,4 +1,9 @@
 module Main (main) where
 
+import Config
+
 main :: IO ()
-main = putStrLn "Hello, Haskell!"
+main = do
+  c <- Config.readConfig
+  print c
+
