@@ -21,6 +21,7 @@
                 # --- Dependencies ---
                 text
                 yaml
+                hspec
 
                 # --- Tooling ---
                 cabal-install

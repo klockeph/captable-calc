@@ -9,9 +9,9 @@ financingRounds:
     issuePrice: 3.14
 
 ownedShares:
-  - roundIssued: 0
-    amount: 1
-  - roundIssued: 1
-    amount: 2
-  - roundIssued: 1
-    amount: 2
+  - amount: 1
+    fmv: 1.23
+  - amount: 2
+    fmv: 3.14
+  - amount: 2
+    fmv: 3.14
