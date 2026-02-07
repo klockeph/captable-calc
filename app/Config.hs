@@ -25,9 +25,9 @@ data OwnedShares = OwnedShares
 instance FromJSON OwnedShares
 
 data Config = Config
-  { 
-    ownedShares :: [OwnedShares]
-  , rounds :: [FinancingRound]
+  {
+    financingRounds :: [FinancingRound]
+  , ownedShares :: [OwnedShares]
   } deriving (Show, Generic)
 
 instance FromJSON Config
