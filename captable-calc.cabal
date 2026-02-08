@@ -19,7 +19,7 @@ executable captable-calc
     import:           warnings
     main-is:          Main.hs
     other-modules:    Config, Calc
-    build-depends:    base ^>=4.20.2.0, yaml, text, Decimal, aeson
+    build-depends:    base ^>=4.20.2.0, yaml, text, Decimal, aeson, optparse-applicative
     hs-source-dirs:   app
     default-language: GHC2024
 

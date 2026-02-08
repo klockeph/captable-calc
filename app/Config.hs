@@ -38,5 +38,5 @@ data Config = Config
 
 instance FromJSON Config
 
-readConfig :: IO Config
-readConfig = decodeFileThrow "config.yaml" :: IO Config
+readConfig :: FilePath -> IO Config
+readConfig path = decodeFileThrow path
