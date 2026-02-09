@@ -1,7 +1,15 @@
-module Calc (worthAtPrice, profitAtPrice, perSharePayout) where
+module Calc
+  ( worthAtPrice
+  , profitAtPrice
+  , perSharePayout
+  , conversionThresholds
+  , findPriceForPayout
+  , minPriceForUnexercisedProfit
+  , minPriceForExercisedBreakeven
+  ) where
 
 import Data.Decimal (Decimal)
-import Data.List (partition)
+import Data.List (partition, sort)
 
 import Config (FinancingRound (..), OwnedShares (..))
 
@@ -64,3 +72,80 @@ profitAtPrice rounds owned salePrice = sum $ lotProfit <$> owned
 -- Investors convert when conversion value exceeds preference value.
 takesPreference :: Decimal -> FinancingRound -> Bool
 takesPreference pricePerShare r = issuePrice r >= pricePerShare
+
+-- | Get sorted conversion thresholds for all rounds.
+-- Each threshold is a sale price where a round switches from preference to conversion.
+-- A round converts when salePrice / fullyDiluted > issuePrice,
+-- i.e., when salePrice > issuePrice * fullyDiluted.
+conversionThresholds :: [FinancingRound] -> [Decimal]
+conversionThresholds rounds = sort $ threshold <$> rounds
+  where
+    threshold r = issuePrice r * fromIntegral (fullyDiluted $ last rounds)
+
+-- | Find minimum sale price achieving target per-share payout.
+-- Iterates through intervals defined by conversion thresholds,
+-- solving linear equations in each interval.
+findPriceForPayout :: [FinancingRound] -> Decimal -> Maybe Decimal
+findPriceForPayout [] _ = Nothing
+findPriceForPayout _ target | target <= 0 = Just 0
+findPriceForPayout rounds target = findInIntervals intervals
+  where
+    thresholds = conversionThresholds rounds
+    -- Create intervals: [(0, t1), (t1, t2), ..., (tn, Nothing)]
+    -- Nothing represents unbounded upper end
+    intervals = zip (0 : thresholds) (fmap Just thresholds ++ [Nothing])
+
+    findInIntervals :: [(Decimal, Maybe Decimal)] -> Maybe Decimal
+    findInIntervals ((lo, mHi):rest)
+      | isValidInInterval = Just candidate
+      | otherwise = findInIntervals rest
+      where
+        -- Calculate at a point inside the interval to determine which rounds convert
+        testPoint = case mHi of
+          Just hi -> (lo + hi) / 2
+          Nothing -> lo + 1
+        pricePerShare = testPoint / fromIntegral (fullyDiluted $ last rounds)
+        (prefRounds, convertRounds) = partition (takesPreference pricePerShare) rounds
+        totalPref = totalPreferenceAmount prefRounds
+        participating = participatingShareCount rounds convertRounds
+
+        -- In this interval: payout = (salePrice - totalPref) / participating
+        -- Solve: target = (salePrice - totalPref) / participating
+        -- => salePrice = target * participating + totalPref
+        candidate = target * participating + totalPref
+
+        isValidInInterval =
+          participating > 0 &&
+          candidate > lo &&
+          case mHi of
+            Just hi -> candidate <= hi
+            Nothing -> True
+
+    findInIntervals [] = Nothing
+
+-- | Minimum sale price where payout equals smallest FMV (unexercised options profit).
+minPriceForUnexercisedProfit :: [FinancingRound] -> [OwnedShares] -> Maybe Decimal
+minPriceForUnexercisedProfit [] _ = Nothing
+minPriceForUnexercisedProfit _ [] = Nothing
+minPriceForUnexercisedProfit rounds owned =
+  findPriceForPayout rounds (minimum $ fmv <$> owned)
+
+-- | Minimum sale price where profit equals total exercise cost (break-even after exercising all).
+-- This finds the price where: sum((payout - fmv_i) * amount_i) = sum(fmv_i * amount_i)
+-- which simplifies to: sum(payout * amount_i) = 2 * sum(fmv_i * amount_i)
+-- => payout * totalShares = 2 * totalExerciseCost
+-- => targetPayout = 2 * totalExerciseCost / totalShares
+minPriceForExercisedBreakeven :: [FinancingRound] -> [OwnedShares] -> Maybe Decimal
+minPriceForExercisedBreakeven [] _ = Nothing
+minPriceForExercisedBreakeven _ [] = Nothing
+minPriceForExercisedBreakeven rounds owned
+  | totalShares == 0 = Nothing
+  | otherwise = findPriceForPayout rounds targetPayout
+  where
+    totalShares = fromIntegral $ sum (amount <$> owned)
+    totalExerciseCost = sum $ (\lot -> fmv lot * fromIntegral (amount lot)) <$> owned
+    -- For break-even: profit = exercise cost
+    -- profit = sum((payout - fmv_i) * amount_i) for lots where payout > fmv_i
+    -- At break-even with all lots profitable: payout * total - totalCost = totalCost
+    -- => payout = 2 * totalCost / total
+    targetPayout = 2 * totalExerciseCost / totalShares

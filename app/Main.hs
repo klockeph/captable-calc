@@ -3,7 +3,7 @@ module Main (main) where
 import Data.Decimal (Decimal, roundTo)
 import Options.Applicative
 
-import Calc (worthAtPrice, profitAtPrice)
+import Calc (worthAtPrice, profitAtPrice, minPriceForUnexercisedProfit, minPriceForExercisedBreakeven)
 import Config (Config (..), readConfig)
 
 data Options = Options
@@ -30,12 +30,19 @@ main = do
    <> header "captable-calc - a cap table calculator"
     )
   cfg <- readConfig (configPath opts)
+  let rounds = financingRounds cfg
+      owned = ownedShares cfg
   case sellPrice opts of
-    Nothing -> print cfg
+    Nothing -> do
+      putStrLn "Inflection Points:"
+      case minPriceForUnexercisedProfit rounds owned of
+        Nothing -> putStrLn "  Unexercised profit threshold: N/A"
+        Just p -> putStrLn $ "  Unexercised profit threshold: $" ++ show (roundTo 2 p)
+      case minPriceForExercisedBreakeven rounds owned of
+        Nothing -> putStrLn "  Exercised break-even threshold: N/A"
+        Just p -> putStrLn $ "  Exercised break-even threshold: $" ++ show (roundTo 2 p)
     Just price -> do
-      let rounds = financingRounds cfg
-          owned = ownedShares cfg
-          worth = roundTo 2 $ worthAtPrice rounds owned price
+      let worth = roundTo 2 $ worthAtPrice rounds owned price
           profit = roundTo 2 $ profitAtPrice rounds owned price
       putStrLn $ "Worth:  $" ++ show worth
       putStrLn $ "Profit: $" ++ show profit

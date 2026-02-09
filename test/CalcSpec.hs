@@ -4,7 +4,7 @@ module Main (main) where
 import Test.Hspec
 
 import Config (FinancingRound(..), OwnedShares(..))
-import Calc (worthAtPrice, profitAtPrice)
+import Calc (worthAtPrice, profitAtPrice, perSharePayout, conversionThresholds, findPriceForPayout, minPriceForUnexercisedProfit, minPriceForExercisedBreakeven)
 
 -- Test data matching config.yaml
 testRounds :: [FinancingRound]
@@ -97,3 +97,63 @@ main = hspec $ do
 
       it "returns 0 for empty owned shares" $ do
         profitAtPrice testRounds [] 10000 `shouldBe` 0
+
+  describe "conversionThresholds" $ do
+    it "returns sorted thresholds based on issue price × fullyDiluted" $ do
+      -- Seed: 1.23 × 200 = 246
+      -- Series A: 3.14 × 200 = 628
+      conversionThresholds testRounds `shouldBe` [246, 628]
+
+    it "returns empty list for empty rounds" $ do
+      conversionThresholds [] `shouldBe` []
+
+  describe "findPriceForPayout" $ do
+    it "returns Nothing for empty rounds" $ do
+      findPriceForPayout [] 10 `shouldBe` Nothing
+
+    it "returns Just 0 for target <= 0" $ do
+      findPriceForPayout testRounds 0 `shouldBe` Just 0
+      findPriceForPayout testRounds (-5) `shouldBe` Just 0
+
+    it "finds correct price for a target payout" $ do
+      -- Verify by checking the payout at the found price
+      case findPriceForPayout testRounds 5 of
+        Nothing -> expectationFailure "Expected Just value"
+        Just price -> perSharePayout testRounds price `shouldBe` 5
+
+    it "finds correct price for higher target payout" $ do
+      case findPriceForPayout testRounds 50 of
+        Nothing -> expectationFailure "Expected Just value"
+        Just price -> perSharePayout testRounds price `shouldBe` 50
+
+  describe "minPriceForUnexercisedProfit" $ do
+    it "returns Nothing for empty rounds" $ do
+      minPriceForUnexercisedProfit [] testOwned `shouldBe` Nothing
+
+    it "returns Nothing for empty owned shares" $ do
+      minPriceForUnexercisedProfit testRounds [] `shouldBe` Nothing
+
+    it "finds price where payout equals minimum FMV" $ do
+      -- Minimum FMV in testOwned is 1.23
+      case minPriceForUnexercisedProfit testRounds testOwned of
+        Nothing -> expectationFailure "Expected Just value"
+        Just price -> perSharePayout testRounds price `shouldBe` 1.23
+
+  describe "minPriceForExercisedBreakeven" $ do
+    it "returns Nothing for empty rounds" $ do
+      minPriceForExercisedBreakeven [] testOwned `shouldBe` Nothing
+
+    it "returns Nothing for empty owned shares" $ do
+      minPriceForExercisedBreakeven testRounds [] `shouldBe` Nothing
+
+    it "finds price where profit equals exercise cost" $ do
+      -- Total exercise cost = 1×1.23 + 2×3.14 + 2×3.14 = 1.23 + 6.28 + 6.28 = 13.79
+      -- Total shares = 5
+      -- Target payout = 2 × 13.79 / 5 = 5.516
+      case minPriceForExercisedBreakeven testRounds testOwned of
+        Nothing -> expectationFailure "Expected Just value"
+        Just price -> do
+          let profit = profitAtPrice testRounds testOwned price
+              exerciseCost = 1 * 1.23 + 2 * 3.14 + 2 * 3.14
+          -- At break-even, profit should equal exercise cost
+          profit `shouldBe` exerciseCost
