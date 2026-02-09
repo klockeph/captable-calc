@@ -3,7 +3,7 @@ module Main (main) where
 import Data.Decimal (Decimal, roundTo)
 import Options.Applicative
 
-import Calc (worthAtPrice, profitAtPrice, minPriceForUnexercisedProfit, minPriceForExercisedBreakeven)
+import Calc (worthAtPrice, profitAtPrice, profitIfExercised, minPriceForUnexercisedProfit, minPriceForExercisedBreakeven)
 import Config (Config (..), readConfig)
 
 data Options = Options
@@ -43,6 +43,8 @@ main = do
         Just p -> putStrLn $ "  Exercised break-even threshold: $" ++ show (roundTo 2 p)
     Just price -> do
       let worth = roundTo 2 $ worthAtPrice rounds owned price
-          profit = roundTo 2 $ profitAtPrice rounds owned price
+          profitUnexercised = roundTo 2 $ profitAtPrice rounds owned price
+          profitExercised = roundTo 2 $ profitIfExercised rounds owned price
       putStrLn $ "Worth:  $" ++ show worth
-      putStrLn $ "Profit: $" ++ show profit
+      putStrLn $ "Profit (unexercised): $" ++ show profitUnexercised
+      putStrLn $ "Profit (exercised):   $" ++ show profitExercised

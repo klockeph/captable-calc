@@ -1,6 +1,7 @@
 module Calc
   ( worthAtPrice
   , profitAtPrice
+  , profitIfExercised
   , perSharePayout
   , conversionThresholds
   , findPriceForPayout
@@ -67,6 +68,14 @@ profitAtPrice rounds owned salePrice = sum $ lotProfit <$> owned
     lotProfit lot
       | payout > fmv lot = (payout - fmv lot) * fromIntegral (amount lot)
       | otherwise        = 0
+
+-- | Calculate profit if all options were already exercised.
+-- Unlike profitAtPrice, this can be negative (underwater options).
+profitIfExercised :: [FinancingRound] -> [OwnedShares] -> Decimal -> Decimal
+profitIfExercised rounds owned salePrice = worth - exerciseCost
+  where
+    worth = worthAtPrice rounds owned salePrice
+    exerciseCost = sum $ (\lot -> fmv lot * fromIntegral (amount lot)) <$> owned
 
 -- | Determine if a round takes preference or converts.
 -- Investors convert when conversion value exceeds preference value.

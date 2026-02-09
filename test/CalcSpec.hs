@@ -4,7 +4,7 @@ module Main (main) where
 import Test.Hspec
 
 import Config (FinancingRound(..), OwnedShares(..))
-import Calc (worthAtPrice, profitAtPrice, perSharePayout, conversionThresholds, findPriceForPayout, minPriceForUnexercisedProfit, minPriceForExercisedBreakeven)
+import Calc (worthAtPrice, profitAtPrice, profitIfExercised, perSharePayout, conversionThresholds, findPriceForPayout, minPriceForUnexercisedProfit, minPriceForExercisedBreakeven)
 
 -- Test data matching config.yaml
 testRounds :: [FinancingRound]
@@ -97,6 +97,42 @@ main = hspec $ do
 
       it "returns 0 for empty owned shares" $ do
         profitAtPrice testRounds [] 10000 `shouldBe` 0
+
+  describe "profitIfExercised" $ do
+    describe "good exit (all in the money)" $ do
+      it "equals profitAtPrice when all lots are profitable" $ do
+        -- At $10,000 sale: payout = $50/share, all FMVs < $50
+        profitIfExercised testRounds testOwned 10000 `shouldBe` profitAtPrice testRounds testOwned 10000
+
+    describe "bad exit (underwater options)" $ do
+      it "returns negative when payout is less than average FMV" $ do
+        -- At $100 sale: payout = $0 (preferences exceed sale)
+        -- Exercise cost = 1×1.23 + 2×3.14 + 2×3.14 = 13.79
+        -- Profit = 0 - 13.79 = -13.79
+        profitIfExercised testRounds testOwned 100 `shouldBe` (-13.79)
+
+    describe "partial underwater" $ do
+      it "returns correct profit with mixed FMV lots" $ do
+        -- Create owned shares where some are underwater
+        let mixedOwned =
+              [ OwnedShares { amount = 1, fmv = 40 }  -- in the money at $50
+              , OwnedShares { amount = 2, fmv = 60 }  -- underwater at $50
+              ]
+        -- At $10,000 sale: payout = $50/share
+        -- Worth = 3 × $50 = $150
+        -- Exercise cost = 1×40 + 2×60 = 160
+        -- Profit (exercised) = 150 - 160 = -10
+        profitIfExercised testRounds mixedOwned 10000 `shouldBe` (-10)
+        -- Compare: profitAtPrice only counts lot 1: (50-40)×1 = 10
+        profitAtPrice testRounds mixedOwned 10000 `shouldBe` 10
+
+    describe "edge cases" $ do
+      it "returns negative exercise cost for empty rounds" $ do
+        -- Worth = 0, exercise cost = 13.79
+        profitIfExercised [] testOwned 10000 `shouldBe` (-13.79)
+
+      it "returns 0 for empty owned shares" $ do
+        profitIfExercised testRounds [] 10000 `shouldBe` 0
 
   describe "conversionThresholds" $ do
     it "returns sorted thresholds based on issue price × fullyDiluted" $ do
