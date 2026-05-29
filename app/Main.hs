@@ -1,12 +1,17 @@
 module Main (main) where
 
+import Control.Monad (when)
 import Data.Char (toLower)
 import Data.Decimal (Decimal, roundTo)
+import Data.List (intercalate, transpose)
 import Numeric (showFFloat)
 import Options.Applicative
 
-import Calc (worthAtPrice, profitAtPrice, profitIfExercised, minPriceForUnexercisedProfit, minPriceForExercisedBreakeven)
-import Config (Config (..), readConfig)
+import Calc
+  ( worthAtPrice, profitAtPrice, profitIfExercised, profitAsConfigured
+  , minPriceForUnexercisedProfit, minPriceForConfiguredProfit, minPriceForExercisedBreakeven
+  )
+import Config (Config (..), OwnedShares (..), readConfig)
 
 readPrice :: ReadM Decimal
 readPrice = eitherReader $ \s ->
@@ -24,25 +29,39 @@ readPrice = eitherReader $ \s ->
       multiplier cs = Left ("Unknown suffix: " ++ cs)
   in (*) <$> parseNum numStr <*> multiplier suffix
 
+humanSuffix :: Decimal -> Maybe String
+humanSuffix d =
+  let n = realToFrac d :: Double
+      absN = abs n
+      fmt x = showFFloat (Just 2) x ""
+  in if      absN >= 1e12 then Just (fmt (n / 1e12) ++ "T")
+     else if absN >= 1e9  then Just (fmt (n / 1e9)  ++ "B")
+     else if absN >= 1e6  then Just (fmt (n / 1e6)  ++ "M")
+     else if absN >= 1e3  then Just (fmt (n / 1e3)  ++ "K")
+     else                      Nothing
+
 formatDollars :: Decimal -> String
 formatDollars d =
   let base = "$" ++ show (roundTo 2 d)
-      n = realToFrac d :: Double
-      absN = abs n
-      fmt x = showFFloat (Just 2) x ""
-      suffix
-        | absN >= 1e12 = Just (fmt (n / 1e12) ++ "T")
-        | absN >= 1e9  = Just (fmt (n / 1e9)  ++ "B")
-        | absN >= 1e6  = Just (fmt (n / 1e6)  ++ "M")
-        | absN >= 1e3  = Just (fmt (n / 1e3)  ++ "K")
-        | otherwise    = Nothing
-  in case suffix of
+  in case humanSuffix d of
        Nothing -> base
        Just s  -> base ++ " (~" ++ s ++ ")"
 
+humanDollars :: Decimal -> String
+humanDollars d = case humanSuffix d of
+  Just s  -> "$" ++ s
+  Nothing -> "$" ++ show (roundTo 2 d)
+
+renderTable :: [[String]] -> String
+renderTable rows =
+  let widths = map (maximum . map length) (transpose rows)
+      padRow = zipWith (\w s -> s ++ replicate (w - length s) ' ') widths
+  in intercalate "\n" (map (intercalate "  " . padRow) rows)
+
 data Options = Options
   { configPath :: FilePath
-  , sellPrice :: Maybe Decimal
+  , extensive  :: Bool
+  , sellPrices :: [Decimal]
   }
 
 optionsParser :: Parser Options
@@ -51,10 +70,20 @@ optionsParser = Options
       ( metavar "CONFIG"
      <> help "Path to YAML config file"
       )
-  <*> optional (argument readPrice
-      ( metavar "SELL_PRICE"
-     <> help "Company sale price, e.g. 4000000000, 4B, 1.5B (optional)"
+  <*> switch
+      ( long "extensive"
+     <> short 'e'
+     <> help "Show three Profit columns (unexercised / as config / all exercised) instead of one"
+      )
+  <*> many (argument readPrice
+      ( metavar "SELL_PRICE..."
+     <> help "Company sale price(s), e.g. 4000000000, 4B, 1.5B. Pass multiple for a sensitivity table. Profit can be negative when exercised lots are underwater."
       ))
+
+formatThreshold :: String -> Maybe Decimal -> String
+formatThreshold label mp = "  " ++ label ++ ": " ++ case mp of
+  Nothing -> "N/A"
+  Just p  -> formatDollars p
 
 main :: IO ()
 main = do
@@ -66,16 +95,31 @@ main = do
   cfg <- readConfig (configPath opts)
   let rounds = financingRounds cfg
       owned = ownedShares cfg
-  case sellPrice opts of
-    Nothing -> do
+      strikePaid = sum [ fmv lot * fromIntegral (amount lot) | lot <- owned, exercised lot ]
+  when (strikePaid > 0) $ do
+    putStrLn $ "Strike paid (exercised lots): " ++ humanDollars strikePaid
+    putStrLn ""
+  case sellPrices opts of
+    [] -> do
       putStrLn "Inflection Points:"
-      case minPriceForUnexercisedProfit rounds owned of
-        Nothing -> putStrLn "  Unexercised profit threshold: N/A"
-        Just p -> putStrLn $ "  Unexercised profit threshold: " ++ formatDollars p
-      case minPriceForExercisedBreakeven rounds owned of
-        Nothing -> putStrLn "  Exercised break-even threshold: N/A"
-        Just p -> putStrLn $ "  Exercised break-even threshold: " ++ formatDollars p
-    Just price -> do
-      putStrLn $ "Worth:  " ++ formatDollars (worthAtPrice rounds owned price)
-      putStrLn $ "Profit (unexercised): " ++ formatDollars (profitAtPrice rounds owned price)
-      putStrLn $ "Profit (exercised):   " ++ formatDollars (profitIfExercised rounds owned price)
+      putStrLn $ formatThreshold "Not exercised"      (minPriceForUnexercisedProfit rounds owned)
+      putStrLn $ formatThreshold "Exercised as config" (minPriceForConfiguredProfit rounds owned)
+      putStrLn $ formatThreshold "All exercised"      (minPriceForExercisedBreakeven rounds owned)
+    prices -> do
+      let headerRow
+            | extensive opts = ["Exit Price", "Proceeds", "Profit (unex.)", "Profit (as cfg)", "Profit (exer.)"]
+            | otherwise      = ["Exit Price", "Proceeds", "Profit"]
+          row p
+            | extensive opts =
+                [ humanDollars p
+                , humanDollars (worthAtPrice rounds owned p)
+                , humanDollars (profitAtPrice rounds owned p)
+                , humanDollars (profitAsConfigured rounds owned p)
+                , humanDollars (profitIfExercised rounds owned p)
+                ]
+            | otherwise =
+                [ humanDollars p
+                , humanDollars (worthAtPrice rounds owned p)
+                , humanDollars (profitAsConfigured rounds owned p)
+                ]
+      putStrLn $ renderTable (headerRow : map row prices)

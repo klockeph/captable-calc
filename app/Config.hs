@@ -1,11 +1,12 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module Config where
 
 import GHC.Generics (Generic)
 import Data.Yaml (decodeFileThrow, FromJSON(..))
-import Data.Aeson (withScientific)
+import Data.Aeson (withObject, withScientific, (.:), (.:?), (.!=))
 import Data.Text (Text)
 import Data.Decimal (Decimal, realFracToDecimal)
 
@@ -26,9 +27,14 @@ instance FromJSON FinancingRound
 data OwnedShares = OwnedShares
   { amount :: Int
   , fmv :: Decimal  -- Fair Market Value per share at time of acquisition
+  , exercised :: Bool  -- True if already exercised (strike paid out of pocket); default False
   } deriving (Show, Generic)
 
-instance FromJSON OwnedShares
+instance FromJSON OwnedShares where
+  parseJSON = withObject "OwnedShares" $ \o -> OwnedShares
+    <$> o .:  "amount"
+    <*> o .:  "fmv"
+    <*> o .:? "exercised" .!= False
 
 data Config = Config
   {

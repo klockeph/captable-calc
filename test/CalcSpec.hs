@@ -2,9 +2,11 @@
 module Main (main) where
 
 import Test.Hspec
+import qualified Data.ByteString.Char8 as BS
+import qualified Data.Yaml as Yaml
 
 import Config (FinancingRound(..), OwnedShares(..))
-import Calc (worthAtPrice, profitAtPrice, profitIfExercised, perSharePayout, conversionThresholds, findPriceForPayout, minPriceForUnexercisedProfit, minPriceForExercisedBreakeven)
+import Calc (worthAtPrice, profitAtPrice, profitIfExercised, profitAsConfigured, perSharePayout, conversionThresholds, findPriceForPayout, minPriceForUnexercisedProfit, minPriceForConfiguredProfit, minPriceForExercisedBreakeven)
 
 -- Test data matching config.yaml
 testRounds :: [FinancingRound]
@@ -25,9 +27,9 @@ testRounds =
 
 testOwned :: [OwnedShares]
 testOwned =
-  [ OwnedShares { amount = 1, fmv = 1.23 }
-  , OwnedShares { amount = 2, fmv = 3.14 }
-  , OwnedShares { amount = 2, fmv = 3.14 }
+  [ OwnedShares { amount = 1, fmv = 1.23, exercised = False }
+  , OwnedShares { amount = 2, fmv = 3.14, exercised = False }
+  , OwnedShares { amount = 2, fmv = 3.14, exercised = False }
   ]
 
 main :: IO ()
@@ -81,8 +83,8 @@ main = hspec $ do
       it "only counts lots where payout exceeds FMV" $ do
         -- Create owned shares with mixed FMVs relative to payout
         let mixedOwned =
-              [ OwnedShares { amount = 1, fmv = 40 }  -- profit: (50 - 40) × 1 = 10
-              , OwnedShares { amount = 2, fmv = 60 }  -- payout < fmv, profit: 0
+              [ OwnedShares { amount = 1, fmv = 40, exercised = False }  -- profit: (50 - 40) × 1 = 10
+              , OwnedShares { amount = 2, fmv = 60, exercised = False }  -- payout < fmv, profit: 0
               ]
         -- At $10,000 sale: payout = $50/share
         profitAtPrice testRounds mixedOwned 10000 `shouldBe` 10
@@ -115,8 +117,8 @@ main = hspec $ do
       it "returns correct profit with mixed FMV lots" $ do
         -- Create owned shares where some are underwater
         let mixedOwned =
-              [ OwnedShares { amount = 1, fmv = 40 }  -- in the money at $50
-              , OwnedShares { amount = 2, fmv = 60 }  -- underwater at $50
+              [ OwnedShares { amount = 1, fmv = 40, exercised = False }  -- in the money at $50
+              , OwnedShares { amount = 2, fmv = 60, exercised = False }  -- underwater at $50
               ]
         -- At $10,000 sale: payout = $50/share
         -- Worth = 3 × $50 = $150
@@ -133,6 +135,69 @@ main = hspec $ do
 
       it "returns 0 for empty owned shares" $ do
         profitIfExercised testRounds [] 10000 `shouldBe` 0
+
+  describe "profitAsConfigured" $ do
+    it "equals profitAtPrice when no lots are exercised" $ do
+      profitAsConfigured testRounds testOwned 10000 `shouldBe` profitAtPrice testRounds testOwned 10000
+      profitAsConfigured testRounds testOwned 1000  `shouldBe` profitAtPrice testRounds testOwned 1000
+      profitAsConfigured testRounds testOwned 100   `shouldBe` profitAtPrice testRounds testOwned 100
+
+    it "equals profitIfExercised when all lots are exercised" $ do
+      let allExer = map (\o -> o { exercised = True }) testOwned
+      profitAsConfigured testRounds allExer 10000 `shouldBe` profitIfExercised testRounds allExer 10000
+      profitAsConfigured testRounds allExer 100   `shouldBe` profitIfExercised testRounds allExer 100
+
+    it "mixes per-lot capping based on exercised flag" $ do
+      -- At $10,000 sale: payout = $50/share
+      -- Lot 1 (fmv 40, exercised): (50-40)*1 = 10
+      -- Lot 2 (fmv 60, not exercised): max(0, 50-60)*2 = 0
+      -- Lot 3 (fmv 60, exercised): (50-60)*2 = -20
+      let mixedOwned =
+            [ OwnedShares { amount = 1, fmv = 40, exercised = True }
+            , OwnedShares { amount = 2, fmv = 60, exercised = False }
+            , OwnedShares { amount = 2, fmv = 60, exercised = True }
+            ]
+      profitAsConfigured testRounds mixedOwned 10000 `shouldBe` (-10)
+
+  describe "minPriceForConfiguredProfit" $ do
+    it "returns Nothing for empty rounds or shares" $ do
+      minPriceForConfiguredProfit [] testOwned `shouldBe` Nothing
+      minPriceForConfiguredProfit testRounds [] `shouldBe` Nothing
+
+    it "matches minPriceForUnexercisedProfit when no lots are exercised" $ do
+      -- With no exercised lots, configured profit is strictly positive at the
+      -- same point as the unexercised profit threshold (where payout > min FMV).
+      case (minPriceForConfiguredProfit testRounds testOwned, minPriceForUnexercisedProfit testRounds testOwned) of
+        (Just cfg, Just unex) -> abs (cfg - unex) `shouldSatisfy` (< 0.05)
+        _                     -> expectationFailure "Expected Just values"
+
+    it "finds the break-even when all lots are exercised" $ do
+      let allExer = map (\o -> o { exercised = True }) testOwned
+      case minPriceForConfiguredProfit testRounds allExer of
+        Nothing -> expectationFailure "Expected Just value"
+        Just p  -> profitAsConfigured testRounds allExer p `shouldSatisfy` \v -> abs v < 0.1
+
+    it "lands strictly between unex and all-exercised thresholds for a genuinely mixed config" $ do
+      -- One exercised lot at FMV 5 (underwater pull) plus two non-exercised lots
+      -- at FMVs 2 and 100. profitAsConfigured(P) = (P-5) + max(0,P-2) + max(0,P-100).
+      -- For 2 < P < 100: profit = 2P - 7, crosses 0 at P = 3.5.
+      -- Both testRounds convert above S=628; payout=3.5 corresponds to S=700.
+      let mixedOwned =
+            [ OwnedShares { amount = 1, fmv = 5,   exercised = True  }
+            , OwnedShares { amount = 1, fmv = 2,   exercised = False }
+            , OwnedShares { amount = 1, fmv = 100, exercised = False }
+            ]
+      case ( minPriceForUnexercisedProfit testRounds mixedOwned
+           , minPriceForConfiguredProfit testRounds mixedOwned
+           , minPriceForExercisedBreakeven testRounds mixedOwned
+           ) of
+        (Just unex, Just cfg, Just allEx) -> do
+          abs (cfg - 700) `shouldSatisfy` (< 0.05)
+          cfg `shouldSatisfy` (> unex)
+          cfg `shouldSatisfy` (< allEx)
+          -- Configured profit at the returned price should be essentially zero.
+          abs (profitAsConfigured testRounds mixedOwned cfg) `shouldSatisfy` (< 0.5)
+        _ -> expectationFailure "Expected Just values for all three thresholds"
 
   describe "conversionThresholds" $ do
     it "returns sorted thresholds based on issue price × fullyDiluted" $ do
@@ -182,14 +247,31 @@ main = hspec $ do
     it "returns Nothing for empty owned shares" $ do
       minPriceForExercisedBreakeven testRounds [] `shouldBe` Nothing
 
-    it "finds price where profit equals exercise cost" $ do
-      -- Total exercise cost = 1×1.23 + 2×3.14 + 2×3.14 = 1.23 + 6.28 + 6.28 = 13.79
-      -- Total shares = 5
-      -- Target payout = 2 × 13.79 / 5 = 5.516
+    it "finds price where profitIfExercised first reaches 0 (payout = avg FMV)" $ do
+      -- Total exercise cost = 1×1.23 + 2×3.14 + 2×3.14 = 13.79
+      -- Total shares = 5; weighted-avg FMV = 13.79 / 5 = 2.758
       case minPriceForExercisedBreakeven testRounds testOwned of
         Nothing -> expectationFailure "Expected Just value"
         Just price -> do
-          let profit = profitAtPrice testRounds testOwned price
-              exerciseCost = 1 * 1.23 + 2 * 3.14 + 2 * 3.14
-          -- At break-even, profit should equal exercise cost
-          profit `shouldBe` exerciseCost
+          perSharePayout testRounds price `shouldBe` 2.758
+          -- At break-even, profitIfExercised should be 0
+          profitIfExercised testRounds testOwned price `shouldBe` 0
+
+  describe "OwnedShares YAML parsing" $ do
+    it "defaults exercised to False when the field is omitted" $ do
+      let yaml = BS.pack "amount: 5\nfmv: 1.5\n"
+      case Yaml.decodeThrow yaml :: Maybe OwnedShares of
+        Just o  -> exercised o `shouldBe` False
+        Nothing -> expectationFailure "Expected successful parse"
+
+    it "respects exercised: true" $ do
+      let yaml = BS.pack "amount: 5\nfmv: 1.5\nexercised: true\n"
+      case Yaml.decodeThrow yaml :: Maybe OwnedShares of
+        Just o  -> exercised o `shouldBe` True
+        Nothing -> expectationFailure "Expected successful parse"
+
+    it "respects exercised: false" $ do
+      let yaml = BS.pack "amount: 5\nfmv: 1.5\nexercised: false\n"
+      case Yaml.decodeThrow yaml :: Maybe OwnedShares of
+        Just o  -> exercised o `shouldBe` False
+        Nothing -> expectationFailure "Expected successful parse"

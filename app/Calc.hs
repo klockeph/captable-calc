@@ -2,10 +2,12 @@ module Calc
   ( worthAtPrice
   , profitAtPrice
   , profitIfExercised
+  , profitAsConfigured
   , perSharePayout
   , conversionThresholds
   , findPriceForPayout
   , minPriceForUnexercisedProfit
+  , minPriceForConfiguredProfit
   , minPriceForExercisedBreakeven
   ) where
 
@@ -77,6 +79,18 @@ profitIfExercised rounds owned salePrice = worth - exerciseCost
     worth = worthAtPrice rounds owned salePrice
     exerciseCost = sum $ (\lot -> fmv lot * fromIntegral (amount lot)) <$> owned
 
+-- | Calculate profit using each lot's `exercised` flag.
+-- Lots already exercised contribute (payout - fmv) * amount (uncapped, can be negative).
+-- Non-exercised lots contribute max(0, payout - fmv) * amount (you simply wouldn't exercise underwater options).
+profitAsConfigured :: [FinancingRound] -> [OwnedShares] -> Decimal -> Decimal
+profitAsConfigured rounds owned salePrice = sum $ lotProfit <$> owned
+  where
+    payout = perSharePayout rounds salePrice
+    lotProfit lot
+      | exercised lot    = (payout - fmv lot) * fromIntegral (amount lot)
+      | payout > fmv lot = (payout - fmv lot) * fromIntegral (amount lot)
+      | otherwise        = 0
+
 -- | Determine if a round takes preference or converts.
 -- Investors convert when conversion value exceeds preference value.
 takesPreference :: Decimal -> FinancingRound -> Bool
@@ -139,22 +153,36 @@ minPriceForUnexercisedProfit _ [] = Nothing
 minPriceForUnexercisedProfit rounds owned =
   findPriceForPayout rounds (minimum $ fmv <$> owned)
 
--- | Minimum sale price where profit equals total exercise cost (break-even after exercising all).
--- This finds the price where: sum((payout - fmv_i) * amount_i) = sum(fmv_i * amount_i)
--- which simplifies to: sum(payout * amount_i) = 2 * sum(fmv_i * amount_i)
--- => payout * totalShares = 2 * totalExerciseCost
--- => targetPayout = 2 * totalExerciseCost / totalShares
+-- | Minimum sale price where configured profit (mixed exercised/non-exercised lots) > 0.
+-- profitAsConfigured can sit at 0 for a range (e.g. all non-exercised lots underwater),
+-- so we look for the strict crossing into positive territory. Bisection on a
+-- doubling-expanded upper bound converges to that crossing.
+minPriceForConfiguredProfit :: [FinancingRound] -> [OwnedShares] -> Maybe Decimal
+minPriceForConfiguredProfit [] _ = Nothing
+minPriceForConfiguredProfit _ [] = Nothing
+minPriceForConfiguredProfit rounds owned = bisect 0 <$> findUpper 1e6
+  where
+    profit = profitAsConfigured rounds owned
+    findUpper hi
+      | hi > 1e18     = Nothing
+      | profit hi > 0 = Just hi
+      | otherwise     = findUpper (hi * 2)
+    bisect lo hi
+      | hi - lo < 0.01 = hi
+      | profit mid > 0 = bisect lo mid
+      | otherwise      = bisect mid hi
+      where mid = (lo + hi) / 2
+
+-- | Minimum sale price where, assuming every lot was already exercised, profit first becomes positive.
+-- sum((payout - fmv_i) * amount_i) > 0  <=>  payout > totalExerciseCost / totalShares
+-- (i.e., payout exceeds the weighted-average FMV).
 minPriceForExercisedBreakeven :: [FinancingRound] -> [OwnedShares] -> Maybe Decimal
 minPriceForExercisedBreakeven [] _ = Nothing
 minPriceForExercisedBreakeven _ [] = Nothing
 minPriceForExercisedBreakeven rounds owned
   | totalShares == 0 = Nothing
-  | otherwise = findPriceForPayout rounds targetPayout
+  | otherwise        = findPriceForPayout rounds targetPayout
   where
-    totalShares = fromIntegral $ sum (amount <$> owned)
+    totalShares       = fromIntegral $ sum (amount <$> owned)
     totalExerciseCost = sum $ (\lot -> fmv lot * fromIntegral (amount lot)) <$> owned
-    -- For break-even: profit = exercise cost
-    -- profit = sum((payout - fmv_i) * amount_i) for lots where payout > fmv_i
-    -- At break-even with all lots profitable: payout * total - totalCost = totalCost
-    -- => payout = 2 * totalCost / total
-    targetPayout = 2 * totalExerciseCost / totalShares
+    targetPayout      = totalExerciseCost / totalShares

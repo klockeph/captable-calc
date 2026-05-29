@@ -28,6 +28,6 @@ test-suite captable-calc-test
     type:             exitcode-stdio-1.0
     main-is:          CalcSpec.hs
     other-modules:    Config, Calc
-    build-depends:    base ^>=4.20.2.0, yaml, text, Decimal, aeson, hspec
+    build-depends:    base ^>=4.20.2.0, yaml, text, Decimal, aeson, hspec, bytestring
     hs-source-dirs:   test, app
     default-language: GHC2024

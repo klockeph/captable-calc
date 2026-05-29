@@ -11,7 +11,8 @@ financingRounds:
 ownedShares:
   - amount: 1
     fmv: 1.23
+    exercised: true   # strike already paid; loss possible if underwater at exit
   - amount: 2
-    fmv: 3.14
+    fmv: 3.14         # `exercised` omitted -> defaults to false
   - amount: 2
     fmv: 3.14
